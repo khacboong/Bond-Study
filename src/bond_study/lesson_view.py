@@ -14,7 +14,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtCore import Qt, Signal
 
 from .content import lessons
-from .widgets import CodeEditor, TerminalWidget
+from .widgets import CodeEditor, FindReplaceBar, TerminalWidget
 from .theme import apply_card_shadow
 
 
@@ -129,6 +129,9 @@ class Lesson(QWidget):
         self.code_edit = CodeEditor()
         self.code_edit.setObjectName("codeEditor")
         self.code_edit.setFont(QFont("Menlo", 14))
+        self.find_replace_bar = FindReplaceBar(self.code_edit, editor_card)
+        self.code_edit.set_find_replace_bar(self.find_replace_bar)
+        editor_layout.addWidget(self.find_replace_bar)
         editor_layout.addWidget(self.code_edit)
         left_layout.addWidget(editor_card, stretch=1)
 

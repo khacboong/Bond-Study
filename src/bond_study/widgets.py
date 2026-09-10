@@ -1,11 +1,18 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QTextEdit
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QTextEdit,
+)
 from PySide6.QtGui import (
     QFont, QTextCursor, QKeyEvent, QSyntaxHighlighter,
-    QTextCharFormat, QColor
+    QTextCharFormat, QColor, QTextDocument,
 )
-from PySide6.QtCore import Qt, Signal, QRegularExpression
+from PySide6.QtCore import QEvent, Qt, Signal, QRegularExpression
 
 
 # ============================================================
@@ -348,6 +355,15 @@ class PythonHighlighter(QSyntaxHighlighter):
                 add_span(name_a, name_b, key)
 
 class CodeEditor(QTextEdit):
+    PAIRS = {
+        "(": ")",
+        "[": "]",
+        "{": "}",
+        "\"": "\"",
+        "'": "'",
+        "`": "`",
+    }
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -373,6 +389,114 @@ class CodeEditor(QTextEdit):
 
         # Also: QTextEdit can keep weird rich-text artifacts; disable them.
         self.setAcceptRichText(False)
+        self.find_replace_bar = None
+
+    def set_find_replace_bar(self, bar):
+        """Attach the small Find/Replace bar used by the lesson editor."""
+        self.find_replace_bar = bar
+
+    @staticmethod
+    def _command_modifier(mods):
+        """Support Cmd on macOS and Ctrl on Windows/Linux."""
+        return bool(mods & (Qt.KeyboardModifier.MetaModifier | Qt.KeyboardModifier.ControlModifier))
+
+    def _replace_selection_with_pair(self, opening, closing):
+        cursor = self.textCursor()
+        selected = cursor.selectedText()
+        start = cursor.selectionStart()
+
+        if selected:
+            cursor.insertText(opening + selected + closing)
+            cursor.setPosition(start + len(opening))
+            cursor.setPosition(start + len(opening) + len(selected), QTextCursor.MoveMode.KeepAnchor)
+        else:
+            cursor.insertText(opening + closing)
+            cursor.setPosition(cursor.position() - len(closing))
+        self.setTextCursor(cursor)
+
+    def _insert_pair_or_skip(self, typed):
+        """Insert a pair and leave the cursor between it, or skip a close."""
+        cursor = self.textCursor()
+        closing = self.PAIRS[typed]
+
+        if cursor.hasSelection():
+            self._replace_selection_with_pair(typed, closing)
+            return
+
+        # A quote directly after a backslash is an ordinary character, even
+        # when the next character happens to be the auto-created close quote.
+        if typed in {"'", '"', "`"} and cursor.position() > 0:
+            previous = self.document().characterAt(cursor.position() - 1)
+            if previous == "\\":
+                cursor.insertText(typed)
+                self.setTextCursor(cursor)
+                return
+
+        following = self.document().characterAt(cursor.position())
+        if typed == closing and following == closing:
+            cursor.movePosition(QTextCursor.MoveOperation.Right)
+            self.setTextCursor(cursor)
+            return
+
+        self._replace_selection_with_pair(typed, closing)
+
+    def _delete_empty_pair(self):
+        """Delete both sides when Backspace is between an auto-created pair."""
+        cursor = self.textCursor()
+        if cursor.hasSelection() or cursor.position() <= 0:
+            return False
+
+        before = self.document().characterAt(cursor.position() - 1)
+        after = self.document().characterAt(cursor.position())
+        if before in self.PAIRS and self.PAIRS[before] == after:
+            cursor.setPosition(cursor.position() - 1)
+            cursor.setPosition(cursor.position() + 2, QTextCursor.MoveMode.KeepAnchor)
+            cursor.removeSelectedText()
+            self.setTextCursor(cursor)
+            return True
+        return False
+
+    def find_text(self, query, backward=False):
+        """Find the next match, wrapping around the document when needed."""
+        query = query or ""
+        if not query:
+            return False
+
+        flags = QTextDocument.FindFlag.FindBackward if backward else QTextDocument.FindFlag(0)
+        if self.find(query, flags):
+            return True
+
+        cursor = self.textCursor()
+        cursor.clearSelection()
+        cursor.setPosition(self.document().characterCount() - 1 if backward else 0)
+        self.setTextCursor(cursor)
+        return self.find(query, flags)
+
+    def replace_current(self, query, replacement):
+        cursor = self.textCursor()
+        if cursor.hasSelection() and cursor.selectedText() == query:
+            cursor.insertText(replacement)
+            self.setTextCursor(cursor)
+            return True
+        return False
+
+    def replace_all(self, query, replacement):
+        """Replace all matches in one undoable edit."""
+        if not query:
+            return 0
+
+        original = self.toPlainText()
+        count = original.count(query)
+        if count == 0:
+            return 0
+
+        cursor = self.textCursor()
+        cursor.beginEditBlock()
+        cursor.select(QTextCursor.SelectionType.Document)
+        cursor.insertText(original.replace(query, replacement))
+        cursor.endEditBlock()
+        self.setTextCursor(cursor)
+        return count
 
     # ---------- helpers ----------
     def _current_line_text_and_start(self):
@@ -475,6 +599,39 @@ class CodeEditor(QTextEdit):
         mods = event.modifiers()
         c = self.textCursor()
 
+        # ---- Find / Replace ----
+        if self._command_modifier(mods) and not (mods & Qt.KeyboardModifier.AltModifier):
+            if key == Qt.Key.Key_F and self.find_replace_bar is not None:
+                self.find_replace_bar.open(replace=False)
+                event.accept()
+                return
+            if key == Qt.Key.Key_R and self.find_replace_bar is not None:
+                self.find_replace_bar.open(replace=True)
+                event.accept()
+                return
+            if key == Qt.Key.Key_G and self.find_replace_bar is not None:
+                self.find_replace_bar.find_next(backward=bool(mods & Qt.KeyboardModifier.ShiftModifier))
+                event.accept()
+                return
+
+            # Toggle comments for the current line or selected lines.
+            if key == Qt.Key.Key_Slash:
+                self._toggle_comment()
+                event.accept()
+                return
+
+        # ---- SMART PAIRS: (), [], {}, quotes and backticks ----
+        if not (mods & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier | Qt.KeyboardModifier.AltModifier)):
+            typed = event.text()
+            if typed in self.PAIRS:
+                self._insert_pair_or_skip(typed)
+                event.accept()
+                return
+
+        if key == Qt.Key.Key_Backspace and self._delete_empty_pair():
+            event.accept()
+            return
+
         # ---- SMART BACKSPACE: delete 4 spaces as one tab ----
         if key == Qt.Key.Key_Backspace and not c.hasSelection():
             pos = c.position()
@@ -513,3 +670,155 @@ class CodeEditor(QTextEdit):
             return
 
         super().keyPressEvent(event)
+
+    def _toggle_comment(self):
+        """Add or remove a Python comment on the selected/current lines."""
+        cursor = self.textCursor()
+        doc = self.document()
+        start = cursor.selectionStart()
+        end = cursor.selectionEnd()
+        if end > start:
+            end -= 1
+
+        start_block = doc.findBlock(start)
+        end_block = doc.findBlock(end)
+        blocks = []
+        block = start_block
+        while block.isValid() and block.position() <= end_block.position():
+            blocks.append(block)
+            block = block.next()
+
+        non_empty = [block.text() for block in blocks if block.text().strip()]
+        uncomment = bool(non_empty) and all(text.lstrip().startswith("#") for text in non_empty)
+
+        edit = QTextCursor(doc)
+        edit.beginEditBlock()
+        for block in blocks:
+            line = block.text()
+            line_start = block.position()
+            leading = len(line) - len(line.lstrip(" "))
+            edit.setPosition(line_start + leading)
+            if uncomment:
+                if edit.position() < line_start + len(line) and doc.characterAt(edit.position()) == "#":
+                    edit.deleteChar()
+                    if doc.characterAt(edit.position()) == " ":
+                        edit.deleteChar()
+            elif line.strip():
+                edit.insertText("# ")
+        edit.endEditBlock()
+
+
+class FindReplaceBar(QFrame):
+    """Compact, keyboard-friendly Find/Replace controls for CodeEditor."""
+
+    def __init__(self, editor, parent=None):
+        super().__init__(parent)
+        self.editor = editor
+        self.setObjectName("findReplaceBar")
+        self.setVisible(False)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(6)
+
+        self.find_edit = QLineEdit()
+        self.find_edit.setObjectName("findInput")
+        self.find_edit.setPlaceholderText("Find")
+        self.find_edit.setClearButtonEnabled(True)
+        self.find_edit.returnPressed.connect(self.find_next)
+        layout.addWidget(self.find_edit, 2)
+
+        self.replace_edit = QLineEdit()
+        self.replace_edit.setObjectName("replaceInput")
+        self.replace_edit.setPlaceholderText("Replace")
+        self.replace_edit.returnPressed.connect(self.replace_current)
+        self.replace_edit.setVisible(False)
+        layout.addWidget(self.replace_edit, 2)
+
+        self.previous_button = QPushButton("‹")
+        self.previous_button.setToolTip("Previous match (Shift+Cmd+G)")
+        self.previous_button.clicked.connect(lambda: self.find_next(backward=True))
+        layout.addWidget(self.previous_button)
+
+        self.next_button = QPushButton("›")
+        self.next_button.setToolTip("Next match (Cmd+G)")
+        self.next_button.clicked.connect(self.find_next)
+        layout.addWidget(self.next_button)
+
+        self.replace_button = QPushButton("Replace")
+        self.replace_button.clicked.connect(self.replace_current)
+        self.replace_button.setVisible(False)
+        layout.addWidget(self.replace_button)
+
+        self.replace_all_button = QPushButton("All")
+        self.replace_all_button.setToolTip("Replace all matches")
+        self.replace_all_button.clicked.connect(self.replace_all)
+        self.replace_all_button.setVisible(False)
+        layout.addWidget(self.replace_all_button)
+
+        self.status = QLabel()
+        self.status.setObjectName("findStatus")
+        layout.addWidget(self.status)
+
+        close_button = QPushButton("×")
+        close_button.setToolTip("Close (Esc)")
+        close_button.clicked.connect(self.close_bar)
+        layout.addWidget(close_button)
+
+        self.find_edit.installEventFilter(self)
+        self.replace_edit.installEventFilter(self)
+
+    def open(self, replace=False):
+        selected = self.editor.textCursor().selectedText()
+        if selected and "\n" not in selected:
+            self.find_edit.setText(selected)
+        self.replace_edit.setVisible(replace)
+        self.replace_button.setVisible(replace)
+        self.replace_all_button.setVisible(replace)
+        self.show()
+        self.find_edit.setFocus()
+        self.find_edit.selectAll()
+        if self.find_edit.text():
+            self.find_next()
+
+    def find_next(self, backward=False):
+        found = self.editor.find_text(self.find_edit.text(), backward=backward)
+        self.status.setText("Match" if found else "No matches")
+        return found
+
+    def replace_current(self):
+        query = self.find_edit.text()
+        if not self.editor.replace_current(query, self.replace_edit.text()):
+            self.find_next()
+        else:
+            self.status.setText("Replaced")
+            self.find_next()
+
+    def replace_all(self):
+        count = self.editor.replace_all(self.find_edit.text(), self.replace_edit.text())
+        self.status.setText(f"Replaced {count}" if count else "No matches")
+
+    def close_bar(self):
+        self.hide()
+        self.editor.setFocus()
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Escape:
+                self.close_bar()
+                return True
+
+            command = bool(event.modifiers() & (
+                Qt.KeyboardModifier.MetaModifier | Qt.KeyboardModifier.ControlModifier
+            ))
+            if command and event.key() == Qt.Key.Key_R:
+                self.open(replace=True)
+                return True
+            if command and event.key() == Qt.Key.Key_F:
+                self.find_edit.setFocus()
+                self.find_edit.selectAll()
+                return True
+            if command and event.key() == Qt.Key.Key_G:
+                self.find_next(backward=bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier))
+                return True
+        return super().eventFilter(watched, event)

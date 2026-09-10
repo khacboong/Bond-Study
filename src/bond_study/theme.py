@@ -80,6 +80,31 @@ QFrame#editorCard, QFrame#consoleCard {
     border-radius: 14px;
 }
 
+QFrame#findReplaceBar {
+    background: #F7F7FC;
+    border: 1px solid #E2E4EF;
+    border-radius: 10px;
+}
+
+QLineEdit#findInput, QLineEdit#replaceInput {
+    background: #FFFFFF;
+    color: #30354D;
+    border: 1px solid #DDE1EC;
+    border-radius: 7px;
+    padding: 6px 8px;
+    selection-background-color: #BDB5FF;
+}
+
+QLineEdit#findInput:focus, QLineEdit#replaceInput:focus {
+    border-color: #8C80EF;
+}
+
+QLabel#findStatus {
+    color: #777D95;
+    font-size: 11px;
+    min-width: 58px;
+}
+
 QWidget#mapCanvas {
     background: #FFFFFF;
     border: 1px solid #E5E7F0;
