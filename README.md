@@ -11,8 +11,9 @@ python3 -m pip install -r requirements.txt
 python3 BondStudy.py
 ```
 
-`BondStudy.py` remains the compatibility entry point. The implementation is
-split into the `bond_study/` package:
+The root `BondStudy.py` launcher adds `src/` to Python's import path, so the
+project can be run directly without an editable install. The implementation
+is organized in `src/bond_study/`:
 
 - `content.py` — lesson content, example comments, and SVG lesson icons
 - `theme.py` — shared application styling

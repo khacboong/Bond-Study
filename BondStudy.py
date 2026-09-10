@@ -1,10 +1,18 @@
-"""Compatibility launcher for Bond Study.
+"""Launch Bond Study from a checkout using the src layout."""
 
-The implementation now lives in the ``bond_study`` package. This file keeps
-the original ``python BondStudy.py`` command and the old import names working.
-"""
+from __future__ import annotations
 
-from bond_study.content import (
+import sys
+from pathlib import Path
+
+
+# Keep ``python BondStudy.py`` working without requiring package installation.
+SOURCE_DIR = Path(__file__).resolve().parent / "src"
+if str(SOURCE_DIR) not in sys.path:
+    sys.path.insert(0, str(SOURCE_DIR))
+
+from bond_study.app import main
+from bond_study.content import (  # noqa: E402
     LESSON_ICON_KEYS,
     LESSON_ICON_SVGS,
     levels,
@@ -14,11 +22,10 @@ from bond_study.content import (
     make_lesson,
     make_step,
 )
-from bond_study.lesson_view import Lesson
-from bond_study.navigation import Main, PathMenuWidget, PathNodeButton
-from bond_study.theme import APP_STYLE, apply_card_shadow
-from bond_study.widgets import CodeEditor, PythonHighlighter, TerminalWidget
-from bond_study.app import main
+from bond_study.lesson_view import Lesson  # noqa: E402
+from bond_study.navigation import Main, PathMenuWidget, PathNodeButton  # noqa: E402
+from bond_study.theme import APP_STYLE, apply_card_shadow  # noqa: E402
+from bond_study.widgets import CodeEditor, PythonHighlighter, TerminalWidget  # noqa: E402
 
 
 if __name__ == "__main__":
